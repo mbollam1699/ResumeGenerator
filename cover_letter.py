@@ -101,9 +101,8 @@ def generate_cover_letter(
 
     try:
         response = client.messages.create(
-            model="claude-opus-4-7",
+            model="claude-sonnet-4-6",
             max_tokens=2000,
-            output_config={"effort": "high"},
             system=CL_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_msg}],
         )

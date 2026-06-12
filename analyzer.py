@@ -167,9 +167,8 @@ def score_fit(
 
     try:
         response = client.messages.create(
-            model="claude-opus-4-7",
+            model="claude-sonnet-4-6",
             max_tokens=1500,
-            output_config={"effort": "high"},
             system=FIT_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_msg}],
         )
