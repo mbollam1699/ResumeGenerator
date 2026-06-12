@@ -1,0 +1,13 @@
+.env
+output/
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.playwright/
+.pkgs/
+master_resume.txt
+.claude/
+settings.local.json
+*.pdf
