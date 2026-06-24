@@ -601,6 +601,7 @@ if (
     "job_data" in st.session_state
     and "fit" not in st.session_state
     and "skip_reason" not in st.session_state
+    and "pipeline_error" not in st.session_state
     and st.session_state.get("job_data", {}).get("source") == "manual"
     and api_key and master_resume_text
 ):
@@ -632,7 +633,7 @@ if (
         st.session_state["pdf_bytes"] = pdf_bytes
         progress.progress(100)
     except RuntimeError as exc:
-        st.error(str(exc))
+        st.session_state["pipeline_error"] = str(exc)
     finally:
         progress.empty()
     st.rerun()
@@ -656,8 +657,13 @@ if st.session_state.get("scrape_error"):
 if st.session_state.get("pipeline_error"):
     _, c, _ = st.columns([1, 3, 1])
     with c:
+        err_msg = st.session_state["pipeline_error"]
+        first_line = err_msg.split("\n")[0]
         col_e, col_r = st.columns([4, 1])
-        col_e.error(f"Something went wrong: {st.session_state['pipeline_error']}")
+        col_e.error(f"Something went wrong: {first_line}")
+        if "\n" in err_msg:
+            with st.expander("Error details"):
+                st.code(err_msg, language=None)
         if col_r.button("Retry"):
             for k in ["pipeline_error", "job_data", "sponsorship", "fit", "tailored", "pdf_path"]:
                 st.session_state.pop(k, None)

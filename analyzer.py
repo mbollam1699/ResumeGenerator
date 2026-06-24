@@ -167,13 +167,27 @@ def score_fit(
 
     try:
         response = client.messages.create(
-            model="claude-sonnet-4",
+            model="claude-sonnet-4-6",
             max_tokens=1500,
             system=FIT_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_msg}],
         )
     except anthropic.APIError as exc:
-        raise RuntimeError(f"Claude API error during fit scoring: {exc}") from exc
+        status = getattr(exc, "status_code", "N/A")
+        body = getattr(exc, "body", None)
+        headers = getattr(exc, "response", None)
+        resp_headers = dict(headers.headers) if headers else "N/A"
+        raise RuntimeError(
+            f"Claude API error during fit scoring:\n"
+            f"  Status: {status}\n"
+            f"  Error: {exc}\n"
+            f"  Body: {body}\n"
+            f"  Response headers: {resp_headers}\n"
+            f"  Model: claude-sonnet-4-6\n"
+            f"  Base URL: {base_url or 'default (api.anthropic.com)'}\n"
+            f"  System prompt: {FIT_SYSTEM_PROMPT}\n"
+            f"  Full user prompt:\n{user_msg}"
+        ) from exc
 
     text_block = next((b for b in response.content if b.type == "text"), None)
     if not text_block:
