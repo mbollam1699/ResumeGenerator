@@ -227,7 +227,7 @@ def tailor_resume(
 
     try:
         response = client.messages.create(
-            model="claude-sonnet-4-6",
+            model="claude-sonnet-4",
             max_tokens=8000,
             system=TAILOR_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_msg}],

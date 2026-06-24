@@ -15,137 +15,101 @@ from cover_letter import generate_cover_letter, generate_cover_letter_pdf
 st.set_page_config(
     page_title="ResumeAgent",
     page_icon="✦",
-    layout="wide",
-    initial_sidebar_state="expanded",
+    layout="centered",
 )
+
+# ── Fonts ────────────────────────────────────────────────────────────────────
+st.markdown('<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">', unsafe_allow_html=True)
 
 # ── CSS ───────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
 
 *, html, body, .stApp, [class*="css"] {
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
 }
 .stApp { background: #F7F7F8 !important; }
-.block-container { padding: 1.5rem 2.5rem 5rem !important; max-width: none !important; }
+.block-container { padding: 1.5rem 2.5rem 5rem !important; }
 
-/* ── Hide all Streamlit chrome ── */
+/* ── Hide Streamlit chrome ── */
 header[data-testid="stHeader"],
-[data-testid="stHeader"],
 [data-testid="stDecoration"],
 [data-testid="stToolbar"],
 [data-testid="stToolbarActions"],
 [data-testid="stStatusWidget"],
 [data-testid="stAppToolbarActions"],
-[data-testid="collapsedControl"],
-[data-testid="stSidebarCollapsedControl"],
-[data-testid="stSidebarCollapsedControl"] *,
+[data-testid="stSidebar"],
 [data-testid="stSidebarCollapseButton"],
-[data-testid="stSidebarCollapseButton"] *,
-[data-testid="stMainBlockContainer"] > div:first-child > button,
-section[data-testid="stSidebar"] + div > button,
-button[aria-label="Close sidebar"],
-button[aria-label="Open sidebar"],
-button[aria-label="Collapse sidebar"],
-button[aria-label="Expand sidebar"],
+[data-testid="stSidebarCollapsedControl"],
 #MainMenu, footer {
     display: none !important;
     height: 0 !important;
     overflow: hidden !important;
 }
 
-/* ── Sidebar — flush to top, no gap ────────────────────────────── */
-[data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #071428 0%, #0B1B35 100%) !important;
-    border-right: 1px solid rgba(255,255,255,0.05) !important;
-    top: 0 !important;
-    margin-top: 0 !important;
+/* ── Popover (settings gear) ───────────────────────────────────── */
+[data-testid="stPopover"] > div {
+    min-width: 320px !important;
 }
-[data-testid="stSidebarContent"] { padding: 1.5rem 1.25rem !important; }
-
-[data-testid="stSidebar"] p,
-[data-testid="stSidebar"] span,
-[data-testid="stSidebar"] div,
-[data-testid="stSidebar"] label,
-[data-testid="stSidebar"] small { color: #94A3B8 !important; }
-
-/* All sidebar widget labels — needs high specificity */
-[data-testid="stSidebar"] label,
-[data-testid="stSidebar"] [data-testid="stWidgetLabel"],
-[data-testid="stSidebar"] [data-testid="stWidgetLabel"] p,
-[data-testid="stSidebar"] .stTextInput label,
-[data-testid="stSidebar"] .stTextArea label {
-    font-size: 0.6rem !important;
-    letter-spacing: 0.07em !important;
-    font-weight: 600 !important;
-    color: rgba(255,255,255,0.35) !important;
+/* Scale down ALL content inside the popover panel */
+[data-testid="stPopover"] div[data-baseweb="popover"] * {
+    font-size: 0.72rem !important;
 }
-[data-testid="stSidebar"] input {
-    background: rgba(255,255,255,0.06) !important;
-    border: 1px solid rgba(255,255,255,0.1) !important;
-    border-radius: 10px !important;
-    color: #F1F5F9 !important;
+[data-testid="stPopover"] div[data-baseweb="popover"] [data-testid="stWidgetLabel"] p,
+[data-testid="stPopover"] div[data-baseweb="popover"] label {
+    font-size: 0.62rem !important;
+}
+[data-testid="stPopover"] div[data-baseweb="popover"] input {
+    height: 2rem !important;
+}
+
+/* ── Global alert / error / success font sizing ────────────────── */
+[data-testid="stAlert"] p,
+[data-testid="stAlert"] div,
+.stAlert p {
     font-size: 0.78rem !important;
-    caret-color: #F1F5F9 !important;
 }
-[data-testid="stSidebar"] input:focus {
+/* Popover button — hide everything via visibility, then show ::after */
+[data-testid="stPopover"] button {
+    visibility: hidden !important;
+    position: relative !important;
+    background: white !important;
+    border: 1.5px solid #E5E7EB !important;
+    border-radius: 10px !important;
+    height: 2rem !important;
+}
+[data-testid="stPopover"] button::after {
+    content: "⚙  Settings";
+    visibility: visible !important;
+    position: absolute !important;
+    inset: 0 !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    font-size: 0.72rem !important;
+    font-weight: 600 !important;
+    color: #374151 !important;
+}
+[data-testid="stPopover"] button:hover {
     border-color: #6D5DF6 !important;
-    box-shadow: 0 0 0 3px rgba(109,93,246,0.2) !important;
+    background: #F5F3FF !important;
 }
-[data-testid="stSidebar"] input::placeholder { color: rgba(255,255,255,0.25) !important; }
-
-/* File uploader dropzone */
-[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] {
-    background: rgba(255,255,255,0.04) !important;
-    border: 1.5px dashed rgba(255,255,255,0.15) !important;
-    border-radius: 14px !important;
-    transition: all 0.2s !important;
-    padding: 0.85rem 1rem !important;
+[data-testid="stPopover"] button:hover::after {
+    color: #6D5DF6 !important;
 }
-[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"]:hover {
-    border-color: rgba(109,93,246,0.5) !important;
-    background: rgba(109,93,246,0.06) !important;
-}
-/* Hide ALL internal button children to fix double-text bug,
-   then inject clean label via ::after */
-[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] button {
-    background: rgba(255,255,255,0.08) !important;
-    border: 1px solid rgba(255,255,255,0.15) !important;
-    border-radius: 8px !important;
-    height: 1.9rem !important;
-    padding: 0 0.875rem !important;
+/* Fix file uploader double-text bug globally */
+[data-testid="stFileUploaderDropzone"] button {
     overflow: hidden !important;
     position: relative !important;
 }
-[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] button > * {
+[data-testid="stFileUploaderDropzone"] button > * {
     display: none !important;
 }
-[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] button::after {
+[data-testid="stFileUploaderDropzone"] button::after {
     content: "Browse files";
     font-size: 0.75rem !important;
     font-weight: 500 !important;
-    color: #CBD5E1 !important;
-}
-[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] button:hover::after {
-    color: white !important;
-}
-/* Show drag-drop text, only hide the file size/limit small text */
-[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] small {
-    display: none !important;
-}
-[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] span {
-    color: rgba(255,255,255,0.45) !important;
-    font-size: 0.7rem !important;
-}
-[data-testid="stSidebar"] hr {
-    border-color: rgba(255,255,255,0.07) !important;
-    margin: 1.25rem 0 !important;
-}
-[data-testid="stSidebar"] .stAlert {
-    background: rgba(255,255,255,0.05) !important;
-    border-color: rgba(255,255,255,0.1) !important;
-    color: #94A3B8 !important;
+    color: #374151 !important;
 }
 
 /* ── Cards ─────────────────────────────────────────────────────── */
@@ -333,87 +297,144 @@ hr {
 
 /* ── Spinner ────────────────────────────────────────────────────── */
 .stSpinner > div { border-top-color: #6D5DF6 !important; }
+
+/* ── Mobile Responsive ─────────────────────────────────────────── */
+@media (max-width: 768px) {
+  /* Tighter page padding */
+  .block-container { padding: 1rem 1rem 4rem !important; }
+
+  /* Columns wrap into 2-per-row grid */
+  [data-testid="stHorizontalBlock"] {
+    flex-wrap: wrap !important;
+    gap: 0.5rem !important;
+  }
+  [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+    min-width: 45% !important;
+    flex: 1 1 45% !important;
+  }
+
+  /* Hero header stacks vertically */
+  div[style*="display:flex"][style*="justify-content:space-between"] {
+    flex-direction: column !important;
+    gap: 0.5rem !important;
+  }
+
+  /* Bigger touch targets for buttons */
+  .stButton > button, .stDownloadButton > button {
+    min-height: 2.5rem !important;
+    font-size: 0.78rem !important;
+  }
+
+  /* Wider tap area for inputs */
+  .stTextInput input, .stTextArea textarea {
+    font-size: 0.82rem !important;
+    padding: 0.6rem 0.75rem !important;
+  }
+
+  /* Metric cards breathe on small screens */
+  [data-testid="metric-container"] {
+    padding: 0.9rem 1rem !important;
+  }
+  [data-testid="stMetricValue"] {
+    font-size: 1.15rem !important;
+  }
+
+  /* Tab labels fit */
+  .stTabs [data-baseweb="tab"] {
+    padding: 6px 10px !important;
+    font-size: 0.68rem !important;
+  }
+
+  /* Cards: less border-radius on small screens */
+  [data-testid="stVerticalBlockBorderWrapper"] {
+    border-radius: 16px !important;
+  }
+
+  /* Header row: keep branding + settings on one line */
+  [data-testid="stHorizontalBlock"]:first-child {
+    flex-wrap: nowrap !important;
+  }
+  [data-testid="stHorizontalBlock"]:first-child > [data-testid="stColumn"]:last-child {
+    min-width: auto !important;
+    flex: 0 0 auto !important;
+  }
+
+  /* Collapse popover to gear icon only on mobile */
+  [data-testid="stPopover"] button::after {
+    content: "⚙" !important;
+    font-size: 0.9rem !important;
+  }
+  [data-testid="stPopover"] button {
+    width: 2rem !important;
+    min-width: 2rem !important;
+    padding: 0 !important;
+  }
+}
 </style>
 """, unsafe_allow_html=True)
 
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
-with st.sidebar:
+# ── Header row: branding + settings gear ─────────────────────────────────────
+hdr_left, hdr_right = st.columns([8, 2])
+with hdr_left:
     st.markdown("""
-    <div style="display:flex;align-items:center;gap:10px;padding:0.25rem 0 1.5rem">
+    <div style="display:flex;align-items:center;gap:10px;padding:0.4rem 0">
         <div style="width:34px;height:34px;background:linear-gradient(135deg,#6D5DF6,#8B5CF6);
              border-radius:10px;display:flex;align-items:center;justify-content:center;
              font-size:15px;font-weight:800;color:white;flex-shrink:0">R</div>
         <div>
-            <div style="color:white;font-size:1rem;font-weight:700;letter-spacing:-0.02em;line-height:1.2">ResumeAgent</div>
-            <div style="color:rgba(255,255,255,0.3);font-size:0.7rem;font-weight:400">Powered by Claude AI</div>
+            <span style="font-size:0.95rem;font-weight:700;color:#1D2433;letter-spacing:-0.02em">ResumeAgent</span>
+            <span style="font-size:0.65rem;color:#9CA3AF;margin-left:8px">Powered by Claude AI</span>
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    st.markdown('<p style="font-size:0.58rem;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:rgba(255,255,255,0.28);margin-bottom:0.5rem">API Configuration</p>', unsafe_allow_html=True)
-
-    api_key_input = st.text_input(
-        "Anthropic API Key",
-        type="password",
-        placeholder="sk-ant-api03-...",
-        help="Get yours at console.anthropic.com",
-    )
-    api_key = api_key_input.strip() or None
-
-    base_url_input = st.text_input(
-        "Base URL",
-        placeholder="Optional — leave blank for Anthropic",
-    )
-    base_url = base_url_input.strip() or None
-
-    st.divider()
-
-    st.markdown('<p style="font-size:0.58rem;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:rgba(255,255,255,0.28);margin-bottom:0.5rem">Master Resume</p>', unsafe_allow_html=True)
-
-    uploaded_resume = st.file_uploader(
-        "Drop your resume here",
-        type=["txt", "pdf"],
-        label_visibility="collapsed",
-    )
-
-    default_resume_path = Path(__file__).parent / "master_resume.txt"
-    if uploaded_resume:
-        if uploaded_resume.type == "application/pdf":
-            try:
-                from pypdf import PdfReader
-                reader = PdfReader(io.BytesIO(uploaded_resume.read()))
-                master_resume_text = "\n".join(p.extract_text() or "" for p in reader.pages)
-            except Exception as e:
-                st.warning(f"PDF error: {e}")
-                master_resume_text = ""
+with hdr_right:
+    with st.popover("Settings", use_container_width=True):
+        st.markdown('<p style="font-size:0.62rem;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#667085;margin-bottom:0.5rem">Settings</p>', unsafe_allow_html=True)
+        api_key_input = st.text_input(
+            "Anthropic API Key",
+            type="password",
+            placeholder="sk-ant-api03-...",
+            help="Get yours at console.anthropic.com",
+        )
+        base_url_input = st.text_input(
+            "Base URL",
+            placeholder="Optional — leave blank for Anthropic",
+        )
+        uploaded_resume = st.file_uploader(
+            "Master Resume",
+            type=["txt", "pdf"],
+        )
+        default_resume_path = Path(__file__).parent / "master_resume.txt"
+        if uploaded_resume:
+            st.success(f"✓ Resume loaded")
+        elif default_resume_path.exists():
+            st.caption("Using master_resume.txt")
         else:
-            master_resume_text = uploaded_resume.read().decode("utf-8", errors="ignore")
-        st.success(f"✓  {len(master_resume_text):,} chars loaded")
-    elif default_resume_path.exists():
-        master_resume_text = default_resume_path.read_text(encoding="utf-8")
-        st.markdown('<p style="font-size:0.63rem;color:rgba(255,255,255,0.3);margin-top:0.4rem">Using master_resume.txt</p>', unsafe_allow_html=True)
+            st.warning("Upload a resume to get started.")
+
+api_key = api_key_input.strip() or None
+base_url = base_url_input.strip() or None
+
+if uploaded_resume:
+    if uploaded_resume.type == "application/pdf":
+        try:
+            from pypdf import PdfReader
+            reader = PdfReader(io.BytesIO(uploaded_resume.read()))
+            master_resume_text = "\n".join(p.extract_text() or "" for p in reader.pages)
+        except Exception:
+            master_resume_text = ""
     else:
-        master_resume_text = ""
-        st.warning("Upload a resume to get started.")
+        master_resume_text = uploaded_resume.read().decode("utf-8", errors="ignore")
+elif default_resume_path.exists():
+    master_resume_text = default_resume_path.read_text(encoding="utf-8")
+else:
+    master_resume_text = ""
 
-    st.divider()
-    st.markdown('<p style="font-size:0.68rem;color:rgba(255,255,255,0.18);text-align:center">ResumeAgent v1.0</p>', unsafe_allow_html=True)
 
-
-# ── Hero ─────────────────────────────────────────────────────────────────────
+# ── Tagline ──────────────────────────────────────────────────────────────────
 st.markdown("""
-<div style="display:flex;justify-content:space-between;align-items:center;
-     padding:0.7rem 0 0.9rem">
-    <span style="font-size:0.85rem;font-weight:700;color:#6B7280;
-          letter-spacing:-0.01em">ResumeAgent</span>
-    <div style="display:inline-flex;align-items:center;gap:6px;
-         background:rgba(109,93,246,0.07);border:1px solid rgba(109,93,246,0.18);
-         border-radius:99px;padding:4px 14px;font-size:0.65rem;font-weight:600;
-         color:#6D5DF6;letter-spacing:0.09em;text-transform:uppercase">
-        ✦ &nbsp;AI-Powered Career Tool
-    </div>
-</div>
 <p style="font-size:0.78rem;color:#9CA3AF;font-weight:400;margin:0 0 1rem;line-height:1.6">
     ATS-optimized resume, cover letter &amp; fit analysis — under 60 seconds.
 </p>
@@ -545,9 +566,9 @@ def run_pipeline(url: str, resume: str, key: str, burl: str | None = None):
 # ── Trigger ───────────────────────────────────────────────────────────────────
 if analyze_btn:
     if not api_key:
-        st.error("Enter your Anthropic API key in the sidebar.")
+        st.error("Enter your Anthropic API key in Settings.")
     elif not master_resume_text or not master_resume_text.strip():
-        st.error("Upload your resume in the sidebar first.")
+        st.error("Upload your resume in Settings first.")
     else:
         url_text    = job_url.strip()
         manual_text = st.session_state.get("manual_jd_text", "").strip()

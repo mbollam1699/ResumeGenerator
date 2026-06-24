@@ -101,7 +101,7 @@ def generate_cover_letter(
 
     try:
         response = client.messages.create(
-            model="claude-sonnet-4-6",
+            model="claude-sonnet-4",
             max_tokens=2000,
             system=CL_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_msg}],
