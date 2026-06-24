@@ -2,6 +2,7 @@
 Job posting scraper. Tries requests+BS4 first, falls back to Playwright for JS-heavy pages.
 """
 import re
+import subprocess
 import time
 import requests
 from bs4 import BeautifulSoup
@@ -127,6 +128,16 @@ def _scrape_with_requests(url: str) -> Optional[dict]:
     return structured
 
 
+def _ensure_playwright_chromium():
+    """Install Playwright's Chromium binary if not already present."""
+    subprocess.run(
+        ["playwright", "install", "chromium"],
+        check=True,
+        capture_output=True,
+        timeout=120,
+    )
+
+
 def _scrape_with_playwright(url: str) -> dict:
     try:
         from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
@@ -134,6 +145,8 @@ def _scrape_with_playwright(url: str) -> dict:
         raise RuntimeError(
             "Playwright is not installed. Run: pip install playwright && playwright install chromium"
         ) from exc
+
+    _ensure_playwright_chromium()
 
     try:
         with sync_playwright() as pw:
