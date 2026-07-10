@@ -8,6 +8,8 @@ from reportlab.lib.pagesizes import letter
 from reportlab.lib.units import inch
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_JUSTIFY, TA_RIGHT
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, HRFlowable, Table, TableStyle, KeepTogether
 )
@@ -17,8 +19,46 @@ from reportlab.lib import colors
 OUTPUT_DIR = Path(__file__).parent / "output"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
+_FONT_DIR = Path(__file__).parent / "assets" / "fonts"
+
+
+def _register_fonts() -> dict:
+    """
+    Register Source Sans 3 (bundled in assets/fonts) and map it for <b>/<i>
+    markup. Falls back to Helvetica if the TTF files are missing so PDF
+    generation never breaks.
+    """
+    try:
+        pdfmetrics.registerFont(TTFont("Resume", str(_FONT_DIR / "SourceSans3-Regular.ttf")))
+        pdfmetrics.registerFont(TTFont("Resume-Bold", str(_FONT_DIR / "SourceSans3-Bold.ttf")))
+        pdfmetrics.registerFont(TTFont("Resume-Italic", str(_FONT_DIR / "SourceSans3-It.ttf")))
+        pdfmetrics.registerFont(TTFont("Resume-BoldItalic", str(_FONT_DIR / "SourceSans3-BoldIt.ttf")))
+        pdfmetrics.registerFontFamily(
+            "Resume",
+            normal="Resume",
+            bold="Resume-Bold",
+            italic="Resume-Italic",
+            boldItalic="Resume-BoldItalic",
+        )
+        return {
+            "normal": "Resume",
+            "bold": "Resume-Bold",
+            "italic": "Resume-Italic",
+        }
+    except Exception:
+        return {
+            "normal": "Helvetica",
+            "bold": "Helvetica-Bold",
+            "italic": "Helvetica-Oblique",
+        }
+
+
+FONTS = _register_fonts()
+
 # Matches: 30%, 1.5M+, 200+, 75+, 3x, $12K, 40%
-_METRIC_RE = re.compile(r'\b(\d+(?:\.\d+)?(?:[KMBkmb]\+?|\+(?!\d)|(?:\s*[%x])))\b')
+# Ends with (?!\w) instead of \b: tokens ending in % or + sit next to
+# non-word characters, where \b can never match.
+_METRIC_RE = re.compile(r'\b(\d+(?:\.\d+)?(?:[KMBkmb]\+?|\+(?!\d)|(?:\s*[%x])))(?!\w)')
 _BOLD_MD_RE = re.compile(r'\*\*(.*?)\*\*')
 
 
@@ -53,7 +93,7 @@ def _safe_filename(text: str) -> str:
 def _build_styles():
     name_style = ParagraphStyle(
         "NameStyle",
-        fontName="Helvetica-Bold",
+        fontName=FONTS["bold"],
         fontSize=16,
         leading=19,
         alignment=TA_CENTER,
@@ -61,7 +101,7 @@ def _build_styles():
     )
     contact_style = ParagraphStyle(
         "ContactStyle",
-        fontName="Helvetica",
+        fontName=FONTS["normal"],
         fontSize=9.5,
         leading=12,
         alignment=TA_CENTER,
@@ -69,7 +109,7 @@ def _build_styles():
     )
     section_header_style = ParagraphStyle(
         "SectionHeader",
-        fontName="Helvetica-Bold",
+        fontName=FONTS["bold"],
         fontSize=10.5,
         leading=13,
         spaceBefore=5,
@@ -78,7 +118,7 @@ def _build_styles():
     )
     body_style = ParagraphStyle(
         "BodyText",
-        fontName="Helvetica",
+        fontName=FONTS["normal"],
         fontSize=9.5,
         leading=12,
         leftIndent=0,
@@ -87,7 +127,7 @@ def _build_styles():
     )
     bullet_style = ParagraphStyle(
         "BulletItem",
-        fontName="Helvetica",
+        fontName=FONTS["normal"],
         fontSize=9.5,
         leading=12,
         leftIndent=12,
@@ -97,7 +137,7 @@ def _build_styles():
     )
     sub_style = ParagraphStyle(
         "SubLine",
-        fontName="Helvetica-Oblique",
+        fontName=FONTS["italic"],
         fontSize=9.5,
         leading=11,
         alignment=TA_JUSTIFY,
@@ -105,7 +145,7 @@ def _build_styles():
     )
     exp_date_style = ParagraphStyle(
         "ExpDate",
-        fontName="Helvetica-Oblique",
+        fontName=FONTS["italic"],
         fontSize=9.5,
         leading=12,
         alignment=TA_RIGHT,
@@ -113,7 +153,7 @@ def _build_styles():
     )
     exp_company_style = ParagraphStyle(
         "ExpCompany",
-        fontName="Helvetica-Oblique",
+        fontName=FONTS["italic"],
         fontSize=9.5,
         leading=11,
         alignment=TA_LEFT,
@@ -121,7 +161,7 @@ def _build_styles():
     )
     tagline_style = ParagraphStyle(
         "TaglineStyle",
-        fontName="Helvetica",
+        fontName=FONTS["normal"],
         fontSize=9.5,
         leading=12,
         alignment=TA_CENTER,

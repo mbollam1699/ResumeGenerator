@@ -2,12 +2,12 @@
 Cover letter generator via Claude API + ReportLab PDF.
 Friendly, genuine tone — not robotic. Same formatting rules as resume.
 """
-import re
-import json
 from datetime import date
 from io import BytesIO
 from pathlib import Path
-import anthropic
+
+from claude_client import call_claude_structured
+from pdf_generator import FONTS
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.units import inch
 from reportlab.lib.styles import ParagraphStyle
@@ -42,12 +42,13 @@ Structure — 4 short paragraphs:
 
 Rules:
 - Use ONLY facts from the master resume — never invent or exaggerate.
+- About the company, use ONLY what the job description or the candidate's note says.
+  If neither gives company specifics, hook on the ROLE and its mission instead —
+  never invent company facts, products, or news.
 - Mirror keywords from the job description naturally.
 - Total 250–320 words. Tight and genuine beats long and impressive.
 - No bullet points. Flowing paragraphs only.
-- Tone: like a confident, friendly engineer writing to someone they genuinely respect.
-
-Respond with ONLY a valid JSON object, no markdown fences, no explanation."""
+- Tone: like a confident, friendly engineer writing to someone they genuinely respect."""
 
 CL_USER_TEMPLATE = """Write a cover letter for the following application.
 
@@ -63,13 +64,25 @@ CL_USER_TEMPLATE = """Write a cover letter for the following application.
 === JOB DESCRIPTION ===
 {job_description}
 
-Return exactly this JSON:
-{{
-  "greeting": "Dear Hiring Team,",
-  "paragraphs": ["<opening>", "<body1>", "<body2>", "<closing>"],
-  "sign_off": "Sincerely,",
-  "name": "<candidate full name>"
-}}"""
+=== CANDIDATE'S NOTE ON WHY THIS COMPANY (may be empty) ===
+{company_note}"""
+
+CL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "greeting": {"type": "string", "description": 'e.g. "Dear Hiring Team,"'},
+        "paragraphs": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 4,
+            "maxItems": 4,
+            "description": "opening, body1, body2, closing",
+        },
+        "sign_off": {"type": "string", "description": 'e.g. "Sincerely,"'},
+        "name": {"type": "string", "description": "candidate full name"},
+    },
+    "required": ["greeting", "paragraphs", "sign_off", "name"],
+}
 
 
 # ── API call ──────────────────────────────────────────────────────────────────
@@ -81,61 +94,36 @@ def generate_cover_letter(
     company: str,
     api_key: str,
     base_url: str | None = None,
+    model: str | None = None,
+    company_note: str = "",
 ) -> dict:
     """
     Call Claude to generate a structured cover letter dict.
+    `company_note` is the candidate's own (optional) reason for wanting this
+    company — the only permitted source of company facts beyond the JD.
+
     Returns dict with: greeting, paragraphs, sign_off, name.
     Raises RuntimeError on failure.
     """
-    client_kwargs = {"api_key": api_key}
-    if base_url:
-        client_kwargs["base_url"] = base_url
-    client = anthropic.Anthropic(**client_kwargs)
-
     user_msg = CL_USER_TEMPLATE.format(
         resume=master_resume,
-        job_description=job_description[:8000],
+        job_description=job_description[:30000],
         job_title=job_title,
         company=company,
+        company_note=company_note.strip() or "(none provided)",
     )
 
-    try:
-        response = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=2000,
-            system=CL_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_msg}],
-        )
-    except anthropic.APIError as exc:
-        status = getattr(exc, "status_code", "N/A")
-        body = getattr(exc, "body", None)
-        headers = getattr(exc, "response", None)
-        resp_headers = dict(headers.headers) if headers else "N/A"
-        raise RuntimeError(
-            f"Claude API error during cover letter generation:\n"
-            f"  Status: {status}\n"
-            f"  Error: {exc}\n"
-            f"  Body: {body}\n"
-            f"  Response headers: {resp_headers}\n"
-            f"  Model: claude-sonnet-4-6\n"
-            f"  Base URL: {base_url or 'default (api.anthropic.com)'}\n"
-            f"  System prompt: {CL_SYSTEM_PROMPT}\n"
-            f"  Full user prompt:\n{user_msg}"
-        ) from exc
-
-    text_block = next((b for b in response.content if b.type == "text"), None)
-    if not text_block:
-        raise RuntimeError("Claude returned no text for cover letter.")
-    raw = text_block.text.strip()
-    raw = re.sub(r"^```(?:json)?\s*", "", raw)
-    raw = re.sub(r"\s*```$", "", raw)
-
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(
-            f"Claude returned invalid JSON for cover letter. Raw:\n{raw[:400]}"
-        ) from exc
+    return call_claude_structured(
+        task="cover letter generation",
+        system=CL_SYSTEM_PROMPT,
+        user_msg=user_msg,
+        schema=CL_SCHEMA,
+        api_key=api_key,
+        max_tokens=2000,
+        base_url=base_url,
+        model=model,
+        temperature=0.7,
+    )
 
 
 # ── PDF ───────────────────────────────────────────────────────────────────────
@@ -143,7 +131,7 @@ def generate_cover_letter(
 def _build_styles():
     name_style = ParagraphStyle(
         "CLName",
-        fontName="Helvetica-Bold",
+        fontName=FONTS["bold"],
         fontSize=16,
         leading=19,
         alignment=TA_CENTER,
@@ -151,7 +139,7 @@ def _build_styles():
     )
     contact_style = ParagraphStyle(
         "CLContact",
-        fontName="Helvetica",
+        fontName=FONTS["normal"],
         fontSize=9.5,
         leading=12,
         alignment=TA_CENTER,
@@ -159,7 +147,7 @@ def _build_styles():
     )
     meta_style = ParagraphStyle(
         "CLMeta",
-        fontName="Helvetica",
+        fontName=FONTS["normal"],
         fontSize=9.5,
         leading=13,
         alignment=TA_LEFT,
@@ -167,7 +155,7 @@ def _build_styles():
     )
     body_style = ParagraphStyle(
         "CLBody",
-        fontName="Helvetica",
+        fontName=FONTS["normal"],
         fontSize=10,
         leading=14,
         alignment=TA_JUSTIFY,
@@ -176,7 +164,7 @@ def _build_styles():
     )
     sign_style = ParagraphStyle(
         "CLSign",
-        fontName="Helvetica",
+        fontName=FONTS["normal"],
         fontSize=10,
         leading=14,
         alignment=TA_LEFT,

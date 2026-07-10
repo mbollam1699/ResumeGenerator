@@ -1,131 +1,34 @@
 """
 Resume tailoring via Claude API — ATS-optimized rewrite.
+
+Pipeline: tailor -> (optional) critique/refine pass -> skills audit.
+The audit programmatically enforces the "never invent skills" rule
+instead of trusting the prompt alone.
 """
 import re
-import json
-import anthropic
+
+from claude_client import call_claude_structured
+from config import school_abbreviation_rules
 
 
-TAILOR_SYSTEM_PROMPT = """You are a world-class ATS optimization specialist and professional resume writer
-with 15 years of experience helping engineers land jobs at top tech companies.
+TAILOR_SYSTEM_PROMPT = f"""You are an elite ATS optimization specialist and technical resume writer.
+Rewrite the candidate's master resume for one specific job. Follow these rules in priority order:
 
-Your principles:
-1. NEVER invent, fabricate, or exaggerate facts. Only use information already in the master resume.
-2. Mirror the exact keywords and phrases from the job description — ATS systems do literal string matching.
-3. Keep ALL jobs and ALL degrees — never drop a role or degree. But ruthlessly select only the bullets with the strongest direct relevance and measurable impact for THIS specific role.
-4. Every bullet must use a bold label format: **Label (2-4 words):** description. Example: **Error Analytics Dashboard:** Built real-time processing system handling 1,000+ daily events. Use strong action verbs and quantified results (%, time saved, scale, users impacted).
-5. Match the tone and terminology of the job posting exactly.
-6. TARGET 1.5–2 pages: most relevant role 4-5 bullets; older/less relevant roles 2-3 bullets max.
-7. Tagline: a concise pipe-separated header line matching the role. Format: "Job Title Variant | Key Tech 1 | Key Tech 2 | Key Tech 3 | Domain". Example: "Full Stack Engineer | C# / .NET | React | TypeScript | Healthcare".
-8. Summary: 1-2 sentences MAX, ultra-concise, keyword-rich. No fluff, no generic phrases. Do NOT use "Senior" in the title unless the job description explicitly says "Senior" — match the exact seniority level from the posting.
-9. Skills: List ONLY skills, tools, and technologies that are explicitly present in the master resume. NEVER add tools or technologies that appear only in the job description but not in the candidate's resume — this is fabrication. Drop categories not relevant to this job. Max 5-6 categories.
-10. Projects: only include projects that genuinely strengthen THIS specific application. If a project is not relevant, omit it entirely. Can return empty list.
-10b. Languages: include the languages section ONLY if the job description mentions language requirements, multilingual skills, international teams, or global context. Otherwise return an empty list.
-11. Use abbreviated months only: Jan, Feb, Mar, Apr, May, Jun, Jul, Aug, Sep, Oct, Nov, Dec.
-12. Use abbreviated university names: GSU for Georgia State University, JNTUH for Jawaharlal Nehru Technological University Hyderabad.
-13. For education GPA: US 4.0-scale format as "X.XX/4.00"; non-US 10-point scale format as "X.XX/10". No spaces around the slash.
+1. TRUTH ABOVE ALL: never invent, fabricate, or exaggerate. Every fact, skill, tool, and metric must already exist in the master resume. The skills section may contain ONLY technologies present in the master resume — never ones that appear only in the job description.
+2. Mirror the job description's exact keywords and phrasing naturally (ATS systems do literal string matching), especially in the tagline, summary, skills, and most recent role. Do not stuff keywords unnaturally.
+3. Keep ALL jobs and ALL degrees. Trim bullets instead: 4-5 for the most relevant role, 2-3 for older or less relevant roles. Target 1.5-2 pages total.
+4. Bullet format: "**Label (2-4 words):** description". One primary idea per bullet, strong verb (Built, Designed, Optimized, Automated, Migrated, Reduced...), quantified impact where the master resume supports it. If a bullet has no metric, add technical depth (architecture, scale, implementation detail) instead.
+5. Match the posting's exact seniority — do not write "Senior" unless the job title says so.
+6. Tagline: pipe-separated, "Job Title Variant | Key Tech 1 | Key Tech 2 | Key Tech 3 | Domain".
+7. Summary: 1-2 sentences maximum, ultra-concise and keyword-rich. No fluff.
+8. Tense: present for the current role, past for previous roles.
+9. Dates: abbreviated months only (Jan, Feb, ... Dec). {school_abbreviation_rules()} GPA format: "X.XX/4.00" for US, "X.XX/10" for 10-point scales, no spaces around the slash.
+10. Projects: include only those that genuinely strengthen THIS application (empty list is fine). Languages: include only if the JD mentions languages, multilingual work, or global teams.
+11. Skills section: max 5-6 categories, only ones relevant to this job.
+12. Banned filler: "worked closely with", "responsible for", "team player", "fast-paced environment", "detail-oriented", "dynamic", "innovative", "cutting-edge", "world-class". Avoid repeating the same verbs or adjectives across bullets.
+13. The result must read like an elite human-written resume: technically credible, interview-defensible, optimized for both ATS parsing and a 6-second recruiter scan. Sharpen the highest-impact bullets; not everything can sound equally important."""
 
-ADDITIONAL OPTIMIZATION RULES:
-14. Prioritize believable, technically credible engineering language over recruiter buzzwords. Avoid excessive use of phrases like "customer-facing", "pixel-perfect", "production-ready", "high-performance", "dynamic", "innovative", "cutting-edge", or "world-class" unless directly supported by the job description or measurable outcomes.
-15. Avoid repetitive phrasing across bullets. Do not repeatedly reuse the same adjectives, verbs, or concepts across multiple sections.
-16. Every bullet should communicate ONE primary idea only. Avoid combining architecture, delivery, collaboration, and business impact into a single overloaded sentence.
-17. Prefer concrete engineering specificity over vague responsibility statements. Strong bullets should include at least one of:
-   - measurable impact
-   - scale
-   - latency/performance improvement
-   - users affected
-   - engineering challenge
-   - architectural contribution
-   - workflow/process optimization
-18. If a bullet lacks measurable metrics, strengthen it with technical depth, implementation details, or scope.
-19. Emphasize technical depth when relevant:
-   - rendering optimization
-   - component architecture
-   - state management
-   - REST APIs
-   - testing strategy
-   - CI/CD
-   - accessibility
-   - responsive design
-   - performance optimization
-   - reusable systems
-   - frontend/backend integration
-20. Preserve authenticity. Do NOT make the candidate sound like an architect, manager, designer, or principal engineer unless the resume explicitly demonstrates that scope.
-21. Avoid generic filler phrases such as:
-   - "worked closely with"
-   - "responsible for"
-   - "team player"
-   - "fast-paced environment"
-   - "excellent communication"
-   - "detail-oriented"
-   - "hard-working"
-22. Prefer concise, high-signal bullets over long narrative bullets. Remove unnecessary adjectives and redundant context.
-23. Use modern ATS-friendly formatting and concise sentence structure optimized for recruiter skim-reading.
-24. Maintain consistent tense:
-   - Present tense for current role
-   - Past tense for previous roles
-25. Do not overstuff keywords unnaturally. Maintain natural readability while maximizing ATS relevance.
-26. Ensure the resume creates a clear professional identity aligned to the target role. Do not dilute positioning by overemphasizing unrelated areas.
-27. Most important experience should dominate visually and semantically:
-   - strongest metrics
-   - strongest keyword alignment
-   - strongest technical depth
-28. Projects should sound technically differentiated and outcome-oriented, not like student assignments.
-29. Prefer strong engineering verbs such as:
-   - Built
-   - Designed
-   - Developed
-   - Implemented
-   - Optimized
-   - Automated
-   - Refactored
-   - Integrated
-   - Migrated
-   - Scaled
-   - Reduced
-   - Improved
-   over weaker verbs like:
-   - Helped
-   - Assisted
-   - Participated
-   - Worked on
-30. Avoid AI-sounding resume language. The final output should read like an elite human-written technical resume.
-31. Ensure strong ATS keyword coverage across:
-   - summary
-   - skills
-   - most recent experience
-   - project descriptions
-32. Never blindly copy the job description. Adapt terminology naturally into truthful resume language.
-33. Preserve whitespace efficiency and scannability. Optimize for both ATS parsing and 6-second recruiter scans.
-34. When possible, quantify improvements using:
-   - percentages
-   - time savings
-   - load reduction
-   - throughput
-   - adoption scale
-   - user impact
-   - operational efficiency
-35. Avoid keyword dumping in skills. Curate only the strongest technologies relevant to the target role.
-36. Ensure bullets demonstrate ownership, execution, and technical contribution — not just participation.
-37. If the target role is frontend-focused, emphasize:
-   - React/Angular/Vue
-   - component systems
-   - TypeScript/JavaScript
-   - accessibility
-   - responsive UI
-   - frontend performance
-   - API integration
-   - state management
-   - testing
-   while minimizing unrelated backend or generic tooling emphasis.
-38. If the target role is full-stack-focused, balance frontend and backend contributions proportionally.
-39. Do not make every bullet sound equally important. Prioritize and sharpen the highest-impact bullets.
-40. Keep the final resume polished, concise, technically credible, ATS-optimized, recruiter-friendly, and interview-defensible.
-
-You must respond with ONLY a valid JSON object, no markdown fences, no explanation outside JSON.
-"""
-
-TAILOR_USER_TEMPLATE = """Tailor this resume for the specific job below. Optimize every section for ATS and relevance.
+TAILOR_USER_TEMPLATE = """Tailor this resume for the specific job below.
 
 === MASTER RESUME ===
 {resume}
@@ -139,64 +42,209 @@ TAILOR_USER_TEMPLATE = """Tailor this resume for the specific job below. Optimiz
 === JOB DESCRIPTION ===
 {job_description}
 
-Return a JSON object with exactly these sections:
-{{
-  "name": "<candidate full name>",
-  "contact": "<email | phone | linkedin | portfolio | location — all on one line>",
-  "tagline": "<Job Title Variant | Key Tech 1 | Key Tech 2 | Key Tech 3 | Domain Specialty>",
-  "summary": "<1-2 sentences MAX — ultra-concise, keyword-rich, tailored to this exact role>",
-  "skills": [
-    {{"category": "<category name>", "items": "<only items relevant to this job>"}}
-  ],
-  "experience": [
-    {{
-      "company": "<company name>",
-      "title": "<job title>",
-      "location": "<city, state or Remote>",
-      "dates": "<Abbrev Month Year – Abbrev Month Year>",
-      "bullets": ["<2-5 bullets in **Bold Label:** description format — most impactful + relevant for THIS role, rewritten with job description keywords>"]
-    }}
-  ],
-  "education": [
-    {{
-      "degree": "<degree and major>",
-      "school": "<abbreviated school name: GSU, JNTUH, etc.>",
-      "dates": "<Abbrev Month Year – Abbrev Month Year or graduation year>",
-      "gpa": "<GPA if >= 3.5, else omit>"
-    }}
-  ],
-  "projects": [
-    {{
-      "name": "<project name>",
-      "description": "<one line — rewritten to highlight relevance to this role>",
-      "tech": "<tech stack>",
-      "link": "<direct project URL only — omit if it's a general portfolio page>"
-    }}
-  ],
-  "certifications": ["<cert 1>", "<cert 2>"],
-  "languages": ["<Language (Proficiency)>"]
-}}
+=== ROLE FOCUS ===
+{role_focus}"""
 
-Rules:
-- Keep ALL jobs (every company/title) and ALL degrees — never drop any.
-- Skills: only categories/items relevant to this job. Max 5-6 categories. Drop anything irrelevant.
-- Most relevant role: 4-5 bullets. Older/less relevant: 2-3 bullets.
-- Use abbreviated months (Jan, Sep — never January, September).
-- Use abbreviated school names (GSU, JNTUH).
-- Projects: only include if they genuinely add value for this role.
-- Languages: only include if the job mentions language requirements or multilingual/global context.
-- Ensure the strongest ATS keywords appear naturally in:
-  - tagline
-  - summary
-  - skills
-  - most recent role
-  - top project (if applicable)
-- Prefer quantified, technically specific, interview-defensible bullets.
-- Avoid repetitive wording and recruiter buzzword stuffing.
-- Preserve technical credibility and authenticity at all times.
-- Do not include generic filler content or soft-skill-only bullets.
-- Prioritize readability and recruiter skim efficiency.
-- If a section has no content, return an empty list."""
+CRITIQUE_SYSTEM_PROMPT = """You are a ruthless resume reviewer doing a final quality pass on a tailored resume draft.
+
+Fix these problems if present, and return the FULL corrected resume:
+- Important JD keywords missing from the tagline, summary, skills, or most recent role
+- Weak, vague, or overloaded bullets (more than one idea per bullet)
+- Repeated verbs/adjectives across bullets
+- Seniority mismatch with the posting
+- Buzzword filler or AI-sounding phrasing
+- Wrong tense (must be: present tense for current role, past for previous)
+
+HARD CONSTRAINT: never add any fact, skill, tool, or metric that is not in the MASTER resume. When in doubt, cut rather than embellish. Keep every job and degree. Preserve the bullet format "**Label:** description"."""
+
+CRITIQUE_USER_TEMPLATE = """=== MASTER RESUME (source of truth — nothing outside this may be claimed) ===
+{resume}
+
+=== JOB DESCRIPTION ===
+{job_description}
+
+=== DRAFT TAILORED RESUME (JSON) ===
+{draft}
+
+Review the draft against the job description and return the full corrected resume."""
+
+
+RESUME_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "name": {"type": "string"},
+        "contact": {
+            "type": "string",
+            "description": "email | phone | linkedin | portfolio | location — all on one line",
+        },
+        "tagline": {
+            "type": "string",
+            "description": "Job Title Variant | Key Tech 1 | Key Tech 2 | Key Tech 3 | Domain",
+        },
+        "summary": {"type": "string", "description": "1-2 sentences max"},
+        "skills": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "category": {"type": "string"},
+                    "items": {"type": "string", "description": "comma-separated"},
+                },
+                "required": ["category", "items"],
+            },
+        },
+        "experience": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "company": {"type": "string"},
+                    "title": {"type": "string"},
+                    "location": {"type": "string"},
+                    "dates": {"type": "string", "description": "Abbrev Month Year – Abbrev Month Year"},
+                    "bullets": {
+                        "type": "array",
+                        "items": {"type": "string", "description": "**Bold Label:** description"},
+                    },
+                },
+                "required": ["company", "title", "location", "dates", "bullets"],
+            },
+        },
+        "education": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "degree": {"type": "string"},
+                    "school": {"type": "string", "description": "abbreviated"},
+                    "dates": {"type": "string"},
+                    "gpa": {"type": "string", "description": "only if >= 3.5, else empty string"},
+                },
+                "required": ["degree", "school", "dates"],
+            },
+        },
+        "projects": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "description": {"type": "string"},
+                    "tech": {"type": "string"},
+                    "link": {"type": "string", "description": "direct project URL only, else empty"},
+                },
+                "required": ["name", "description", "tech"],
+            },
+        },
+        "certifications": {"type": "array", "items": {"type": "string"}},
+        "languages": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": [
+        "name", "contact", "tagline", "summary", "skills",
+        "experience", "education", "projects", "certifications", "languages",
+    ],
+}
+
+
+# ── Role focus detection ───────────────────────────────────────────────────────
+
+_ROLE_SIGNALS = {
+    "frontend": [
+        "react", "angular", "vue", "css", "frontend", "front-end", "ui engineer",
+        "user interface", "component", "accessibility", "responsive",
+    ],
+    "backend": [
+        "backend", "back-end", ".net", "c#", "java", "microservice", "rest api",
+        "api design", "server-side", "distributed", "scalab",
+    ],
+    "data": [
+        "etl", "data pipeline", "power bi", "tableau", "data analyst", "analytics",
+        "data warehouse", "data model", "bi ", "visualization",
+    ],
+    "healthcare": [
+        "fhir", "hl7", "ehr", "epic", "cerner", "clinical", "hipaa", "patient",
+        "interoperability", "healthcare",
+    ],
+}
+
+_ROLE_GUIDANCE = {
+    "frontend": (
+        "This role leans FRONTEND: emphasize React/Angular/Vue work, component "
+        "architecture, state management, TypeScript, accessibility, responsive UI, "
+        "and frontend performance. De-emphasize unrelated backend tooling."
+    ),
+    "backend": (
+        "This role leans BACKEND: emphasize C#/.NET, API design, databases, "
+        "performance, reliability, and system architecture. Keep frontend work "
+        "secondary."
+    ),
+    "data": (
+        "This role leans DATA: emphasize SQL, ETL pipelines, dashboards/BI, data "
+        "quality, and turning data into decisions. De-emphasize generic web work."
+    ),
+    "healthcare": (
+        "This role is HEALTHCARE-domain: lead with FHIR/HL7/EHR integration work, "
+        "clinical impact metrics, and HIPAA-aware engineering."
+    ),
+}
+
+
+def detect_role_focus(job_description: str, job_title: str = "") -> str:
+    """Score the JD against role families and return injected guidance text."""
+    text = f"{job_title}\n{job_description}".lower()
+    scores = {
+        family: sum(text.count(sig) for sig in signals)
+        for family, signals in _ROLE_SIGNALS.items()
+    }
+    top = [f for f, s in sorted(scores.items(), key=lambda kv: -kv[1]) if s >= 3][:2]
+    if not top:
+        return (
+            "This role is a general software engineering role: balance frontend and "
+            "backend contributions proportionally to the job description."
+        )
+    return " ".join(_ROLE_GUIDANCE[f] for f in top)
+
+
+# ── Fabrication guard ──────────────────────────────────────────────────────────
+
+def _item_in_master(item: str, master_lower: str) -> bool:
+    """Relaxed check: the skill (or most of its words) appears in the master resume."""
+    it = item.lower().strip()
+    if not it or it in master_lower:
+        return True
+    words = [w for w in re.split(r"[^a-z0-9+#.]+", it) if len(w) > 2]
+    if not words:
+        return True
+    hits = sum(1 for w in words if w in master_lower)
+    return hits / len(words) >= 0.6
+
+
+def audit_skills(tailored: dict, master_resume: str) -> tuple[dict, list[str]]:
+    """
+    Enforce rule #1 programmatically: strip any skill item from the tailored
+    resume that does not appear in the master resume.
+
+    Returns (cleaned_resume, removed_items) so the UI can surface what was cut.
+    """
+    master_lower = master_resume.lower()
+    removed = []
+    cleaned_groups = []
+    for group in tailored.get("skills", []):
+        kept = []
+        for item in (i.strip() for i in group.get("items", "").split(",")):
+            if not item:
+                continue
+            if _item_in_master(item, master_lower):
+                kept.append(item)
+            else:
+                removed.append(item)
+        if kept:
+            cleaned_groups.append({"category": group.get("category", ""), "items": ", ".join(kept)})
+    tailored["skills"] = cleaned_groups
+    return tailored, removed
+
+
+# ── Main entry point ───────────────────────────────────────────────────────────
 
 def tailor_resume(
     master_resume: str,
@@ -205,65 +253,55 @@ def tailor_resume(
     company: str,
     api_key: str,
     base_url: str | None = None,
+    model: str | None = None,
+    refine: bool = True,
 ) -> dict:
     """
-    Send master resume + job description to Claude, get back a structured tailored resume.
+    Send master resume + job description to Claude, get back a structured
+    tailored resume. When `refine` is True, a second critique pass reviews
+    and corrects the draft against the JD.
 
-    Returns parsed JSON dict with sections: name, contact, summary, skills,
-    experience, education, projects, certifications.
-    Raises RuntimeError on API or parse failure.
+    Raises RuntimeError on API failure.
     """
-    client_kwargs = {"api_key": api_key}
-    if base_url:
-        client_kwargs["base_url"] = base_url
-    client = anthropic.Anthropic(**client_kwargs)
-
+    jd = job_description[:30000]
     user_msg = TAILOR_USER_TEMPLATE.format(
         resume=master_resume,
-        job_description=job_description[:8000],
+        job_description=jd,
         job_title=job_title,
         company=company,
+        role_focus=detect_role_focus(jd, job_title),
     )
 
-    try:
-        response = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=8000,
-            system=TAILOR_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_msg}],
+    result = call_claude_structured(
+        task="resume tailoring",
+        system=TAILOR_SYSTEM_PROMPT,
+        user_msg=user_msg,
+        schema=RESUME_SCHEMA,
+        api_key=api_key,
+        max_tokens=8000,
+        base_url=base_url,
+        model=model,
+        temperature=0.5,
+    )
+
+    if refine:
+        import json as _json
+        critique_msg = CRITIQUE_USER_TEMPLATE.format(
+            resume=master_resume,
+            job_description=jd,
+            draft=_json.dumps(result, indent=1),
         )
-    except anthropic.APIError as exc:
-        status = getattr(exc, "status_code", "N/A")
-        body = getattr(exc, "body", None)
-        headers = getattr(exc, "response", None)
-        resp_headers = dict(headers.headers) if headers else "N/A"
-        raise RuntimeError(
-            f"Claude API error during resume tailoring:\n"
-            f"  Status: {status}\n"
-            f"  Error: {exc}\n"
-            f"  Body: {body}\n"
-            f"  Response headers: {resp_headers}\n"
-            f"  Model: claude-sonnet-4-6\n"
-            f"  Base URL: {base_url or 'default (api.anthropic.com)'}\n"
-            f"  System prompt: {TAILOR_SYSTEM_PROMPT}\n"
-            f"  Full user prompt:\n{user_msg}"
-        ) from exc
-
-    text_block = next((b for b in response.content if b.type == "text"), None)
-    if not text_block:
-        raise RuntimeError("Claude returned no text content for resume tailoring.")
-    raw = text_block.text.strip()
-
-    # Strip markdown fences if present
-    raw = re.sub(r"^```(?:json)?\s*", "", raw)
-    raw = re.sub(r"\s*```$", "", raw)
-
-    try:
-        result = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(
-            f"Claude returned invalid JSON for tailored resume. Raw response:\n{raw[:500]}"
-        ) from exc
+        result = call_claude_structured(
+            task="resume refinement",
+            system=CRITIQUE_SYSTEM_PROMPT,
+            user_msg=critique_msg,
+            schema=RESUME_SCHEMA,
+            api_key=api_key,
+            max_tokens=8000,
+            base_url=base_url,
+            model=model,
+            temperature=0.3,
+        )
 
     return _abbreviate_months_in_resume(result)
 

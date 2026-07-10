@@ -1,9 +1,9 @@
 """
-Sponsorship checker and fit scorer using Claude API.
+Sponsorship checker, fit scorer, and ATS keyword coverage.
 """
 import re
-import json
-import anthropic
+
+from claude_client import call_claude_structured
 
 
 # ── Sponsorship ────────────────────────────────────────────────────────────────
@@ -111,7 +111,9 @@ Be realistic — don't inflate scores to make the candidate feel good.
 A score of 70+ means genuinely competitive. 50-69 means worth applying with significant tailoring.
 Below 50 means a tough sell.
 
-You must respond with ONLY a valid JSON object, no markdown fences, no explanation outside JSON."""
+Also extract the job description's most important ATS keywords — the exact
+terms a recruiter or ATS filter would search for (technologies, frameworks,
+methodologies, domain terms). Use the JD's literal wording."""
 
 FIT_USER_TEMPLATE = """Evaluate this candidate's fit for the job.
 
@@ -125,18 +127,54 @@ FIT_USER_TEMPLATE = """Evaluate this candidate's fit for the job.
 {job_title}
 
 === COMPANY ===
-{company}
+{company}"""
 
-Return a JSON object with exactly these fields:
-{{
-  "fit_score": <integer 0-100>,
-  "strong_matches": [<list of strings — skills/experience that directly match requirements>],
-  "weak_matches": [<list of strings — partial or tangential matches>],
-  "gaps": [<list of strings — required skills/experience the candidate clearly lacks>],
-  "nice_to_haves": [<list of strings — preferred skills the candidate has>],
-  "recommendation": "<one of: 'Strong fit — apply now', 'Decent fit — tailor carefully', 'Weak fit — consider skipping'>",
-  "summary": "<2-3 sentence honest assessment>"
-}}"""
+FIT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "fit_score": {
+            "type": "integer", "minimum": 0, "maximum": 100,
+            "description": "Honest 0-100 fit score",
+        },
+        "strong_matches": {
+            "type": "array", "items": {"type": "string"},
+            "description": "Skills/experience that directly match requirements",
+        },
+        "weak_matches": {
+            "type": "array", "items": {"type": "string"},
+            "description": "Partial or tangential matches",
+        },
+        "gaps": {
+            "type": "array", "items": {"type": "string"},
+            "description": "Required skills/experience the candidate clearly lacks",
+        },
+        "nice_to_haves": {
+            "type": "array", "items": {"type": "string"},
+            "description": "Preferred skills the candidate has",
+        },
+        "ats_keywords": {
+            "type": "array", "items": {"type": "string"},
+            "minItems": 10, "maxItems": 20,
+            "description": "The 10-20 most important ATS keywords from the JD, in its literal wording",
+        },
+        "recommendation": {
+            "type": "string",
+            "enum": [
+                "Strong fit — apply now",
+                "Decent fit — tailor carefully",
+                "Weak fit — consider skipping",
+            ],
+        },
+        "summary": {
+            "type": "string",
+            "description": "2-3 sentence honest assessment",
+        },
+    },
+    "required": [
+        "fit_score", "strong_matches", "weak_matches", "gaps",
+        "nice_to_haves", "ats_keywords", "recommendation", "summary",
+    ],
+}
 
 
 def score_fit(
@@ -146,6 +184,7 @@ def score_fit(
     company: str,
     api_key: str,
     base_url: str | None = None,
+    model: str | None = None,
 ) -> dict:
     """
     Use Claude to score the candidate's fit for the job.
@@ -153,54 +192,42 @@ def score_fit(
     Returns the parsed JSON dict from Claude.
     Raises RuntimeError on API or parse failure.
     """
-    client_kwargs = {"api_key": api_key}
-    if base_url:
-        client_kwargs["base_url"] = base_url
-    client = anthropic.Anthropic(**client_kwargs)
-
     user_msg = FIT_USER_TEMPLATE.format(
         resume=master_resume,
-        job_description=job_description[:8000],
+        job_description=job_description[:30000],
         job_title=job_title,
         company=company,
     )
 
-    try:
-        response = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=1500,
-            system=FIT_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_msg}],
-        )
-    except anthropic.APIError as exc:
-        status = getattr(exc, "status_code", "N/A")
-        body = getattr(exc, "body", None)
-        headers = getattr(exc, "response", None)
-        resp_headers = dict(headers.headers) if headers else "N/A"
-        raise RuntimeError(
-            f"Claude API error during fit scoring:\n"
-            f"  Status: {status}\n"
-            f"  Error: {exc}\n"
-            f"  Body: {body}\n"
-            f"  Response headers: {resp_headers}\n"
-            f"  Model: claude-sonnet-4-6\n"
-            f"  Base URL: {base_url or 'default (api.anthropic.com)'}\n"
-            f"  System prompt: {FIT_SYSTEM_PROMPT}\n"
-            f"  Full user prompt:\n{user_msg}"
-        ) from exc
+    return call_claude_structured(
+        task="fit scoring",
+        system=FIT_SYSTEM_PROMPT,
+        user_msg=user_msg,
+        schema=FIT_SCHEMA,
+        api_key=api_key,
+        max_tokens=2000,
+        base_url=base_url,
+        model=model,
+        temperature=0.2,
+    )
 
-    text_block = next((b for b in response.content if b.type == "text"), None)
-    if not text_block:
-        raise RuntimeError("Claude returned no text content for fit score.")
-    raw = text_block.text.strip()
 
-    # Strip markdown fences if Claude added them despite instructions
-    raw = re.sub(r"^```(?:json)?\s*", "", raw)
-    raw = re.sub(r"\s*```$", "", raw)
+# ── Keyword coverage ───────────────────────────────────────────────────────────
 
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(
-            f"Claude returned invalid JSON for fit score. Raw response:\n{raw}"
-        ) from exc
+def keyword_coverage(keywords: list[str], resume_text: str) -> dict:
+    """
+    Check which of the JD's ATS keywords actually appear in the tailored
+    resume text (case-insensitive).
+
+    Returns {"pct": int, "matched": [...], "missing": [...]}.
+    """
+    text = resume_text.lower()
+    matched, missing = [], []
+    for kw in keywords:
+        kw_clean = kw.strip()
+        if not kw_clean:
+            continue
+        (matched if kw_clean.lower() in text else missing).append(kw_clean)
+    total = len(matched) + len(missing)
+    pct = round(len(matched) / total * 100) if total else 0
+    return {"pct": pct, "matched": matched, "missing": missing}
