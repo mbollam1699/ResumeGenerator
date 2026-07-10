@@ -1,15 +1,29 @@
 """
 ResumeAgent — premium SaaS Streamlit UI
 """
+import csv
 import io
+import os
+from datetime import date
 from pathlib import Path
 import streamlit as st
+from dotenv import load_dotenv
 
 from scraper import scrape_job_posting
-from analyzer import check_sponsorship, score_fit
-from tailor import tailor_resume, resume_to_text
+from analyzer import check_sponsorship, score_fit, keyword_coverage
+from tailor import tailor_resume, resume_to_text, audit_skills
 from pdf_generator import generate_pdf
 from cover_letter import generate_cover_letter, generate_cover_letter_pdf
+
+load_dotenv()
+
+
+def _secret(name: str):
+    """Read from st.secrets without blowing up when no secrets file exists."""
+    try:
+        return st.secrets.get(name)
+    except Exception:
+        return None
 
 
 st.set_page_config(
@@ -396,8 +410,10 @@ with hdr_right:
             "Anthropic API Key",
             type="password",
             placeholder="sk-ant-api03-...",
-            help="Get yours at console.anthropic.com",
+            help="Get yours at console.anthropic.com. Can also be set via the ANTHROPIC_API_KEY environment variable or .env file.",
         )
+        if not api_key_input and (os.environ.get("ANTHROPIC_API_KEY") or _secret("ANTHROPIC_API_KEY")):
+            st.caption("✓ Using API key from environment")
         base_url_input = st.text_input(
             "Base URL",
             placeholder="Optional — leave blank for Anthropic",
@@ -414,8 +430,19 @@ with hdr_right:
         else:
             st.warning("Upload a resume to get started.")
 
-api_key = api_key_input.strip() or None
-base_url = base_url_input.strip() or None
+# Settings field wins; otherwise fall back to .env / environment / st.secrets
+api_key = (
+    api_key_input.strip()
+    or os.environ.get("ANTHROPIC_API_KEY")
+    or _secret("ANTHROPIC_API_KEY")
+    or None
+)
+base_url = (
+    base_url_input.strip()
+    or os.environ.get("ANTHROPIC_BASE_URL")
+    or _secret("ANTHROPIC_BASE_URL")
+    or None
+)
 
 if uploaded_resume:
     if uploaded_resume.type == "application/pdf":
@@ -496,74 +523,34 @@ with st.container(border=True):
 st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
 
 
-# ── Pipeline ──────────────────────────────────────────────────────────────────
-def run_pipeline(url: str, resume: str, key: str, burl: str | None = None):
-    progress = st.progress(0, text="Starting...")
-    status = st.empty()
-    try:
-        status.info("Scraping job posting...")
-        progress.progress(10, text="Scraping job posting...")
-        try:
-            job_data = scrape_job_posting(url)
-        except RuntimeError as exc:
-            st.session_state["input_mode_radio"] = "Paste JD"
-            st.session_state["scrape_error"] = str(exc)
-            progress.empty(); status.empty()
-            return
+# ── Application history ───────────────────────────────────────────────────────
+HISTORY_FILE = Path(__file__).parent / "output" / "applications.csv"
 
-        st.session_state["job_data"] = job_data
-        progress.progress(25, text="Scraped.")
 
-        status.info("Checking sponsorship signals...")
-        sponsorship = check_sponsorship(job_data["description"])
-        st.session_state["sponsorship"] = sponsorship
-        progress.progress(35)
-
-        if sponsorship["status"] == "negative":
-            st.session_state["skip_reason"] = (
-                f"⛔ **Skipped:** {sponsorship['label']} — no resume generated."
-            )
-            progress.empty(); status.empty(); return
-
-        status.info("Scoring your fit with Claude...")
-        progress.progress(45, text="Scoring fit...")
-        fit = score_fit(resume, job_data["description"], job_data["title"], job_data["company"], key, burl)
-        st.session_state["fit"] = fit
-        progress.progress(65)
-
-        if fit.get("fit_score", 0) < 50 or "weak fit" in fit.get("recommendation", "").lower():
-            st.session_state["skip_reason"] = (
-                f"⚠️ **Low fit ({fit.get('fit_score',0)}/100):** "
-                f"{fit.get('recommendation','Weak fit')} — not worth applying."
-            )
-            progress.empty(); status.empty(); return
-
-        status.info("Tailoring resume with Claude...")
-        progress.progress(70, text="Tailoring...")
-        tailored = tailor_resume(resume, job_data["description"], job_data["title"], job_data["company"], key, burl)
-        st.session_state["tailored"] = tailored
-        progress.progress(88)
-
-        status.info("Generating PDF...")
-        progress.progress(92, text="Building PDF...")
-        try:
-            pdf_path, pdf_bytes = generate_pdf(tailored, job_data["company"])
-            st.session_state["pdf_path"] = pdf_path
-            st.session_state["pdf_bytes"] = pdf_bytes
-        except RuntimeError as exc:
-            st.session_state["pdf_error"] = str(exc)
-
-        progress.progress(100, text="Done!")
-        status.success("Done!")
-    except RuntimeError as exc:
-        progress.empty()
-        status.error(f"Error: {exc}")
-        st.session_state["pipeline_error"] = str(exc)
-    finally:
-        progress.empty(); status.empty()
+def append_history(jd: dict, fit: dict):
+    """Log each generated application so the job hunt has a paper trail."""
+    HISTORY_FILE.parent.mkdir(exist_ok=True)
+    is_new = not HISTORY_FILE.exists()
+    with open(HISTORY_FILE, "a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        if is_new:
+            writer.writerow(["date", "company", "title", "fit_score", "recommendation", "sponsorship"])
+        writer.writerow([
+            date.today().isoformat(),
+            jd.get("company", ""),
+            jd.get("title", ""),
+            fit.get("fit_score", ""),
+            fit.get("recommendation", ""),
+            st.session_state.get("sponsorship", {}).get("label", ""),
+        ])
 
 
 # ── Trigger ───────────────────────────────────────────────────────────────────
+_RESET_KEYS = ["job_data", "sponsorship", "fit", "tailored", "pdf_path", "pdf_bytes",
+               "scrape_error", "pipeline_error", "pdf_error", "skip_reason",
+               "cl_pdf_bytes", "cl_pdf_path", "cl_error",
+               "force_generate", "removed_skills"]
+
 if analyze_btn:
     if not api_key:
         st.error("Enter your Anthropic API key in Settings.")
@@ -576,9 +563,7 @@ if analyze_btn:
         if not url_text and not manual_text:
             st.error("Enter a job URL or paste a job description.")
         else:
-            for k in ["job_data", "sponsorship", "fit", "tailored", "pdf_path", "pdf_bytes",
-                      "scrape_error", "pipeline_error", "pdf_error", "skip_reason",
-                      "cl_pdf_bytes", "cl_pdf_path", "cl_error"]:
+            for k in _RESET_KEYS + [k for k in st.session_state if str(k).startswith("edit_")]:
                 st.session_state.pop(k, None)
 
             if manual_text and manual_active:
@@ -593,49 +578,73 @@ if analyze_btn:
                 }
                 st.rerun()
             elif url_text:
-                run_pipeline(url_text, master_resume_text, api_key, base_url)
+                with st.spinner("Scraping job posting..."):
+                    try:
+                        st.session_state["job_data"] = scrape_job_posting(url_text)
+                    except RuntimeError as exc:
+                        st.session_state["input_mode_radio"] = "Paste JD"
+                        st.session_state["scrape_error"] = str(exc)
                 st.rerun()
 
-# ── Manual fallback pipeline ──────────────────────────────────────────────────
+# ── Pipeline (single path for both URL and pasted JDs) ────────────────────────
+# Runs step-by-step across reruns; each step only fires when its output is
+# missing, so a "Generate anyway" override can resume where a gate stopped it.
+_jd = st.session_state.get("job_data")
 if (
-    "job_data" in st.session_state
-    and "fit" not in st.session_state
-    and "skip_reason" not in st.session_state
-    and "pipeline_error" not in st.session_state
-    and st.session_state.get("job_data", {}).get("source") == "manual"
-    and api_key and master_resume_text
+    _jd and api_key and master_resume_text
+    and "tailored" not in st.session_state
+    and not st.session_state.get("pipeline_error")
+    and not st.session_state.get("skip_reason")
 ):
-    jd = st.session_state["job_data"]
-    progress = st.progress(30, text="Analyzing...")
+    force = st.session_state.get("force_generate", False)
     try:
-        sp = check_sponsorship(jd["description"])
-        st.session_state["sponsorship"] = sp
-        progress.progress(38)
-        if sp["status"] == "negative":
-            st.session_state["skip_reason"] = f"⛔ **Skipped:** {sp['label']} — no resume generated."
-            progress.empty(); st.rerun()
+        if "sponsorship" not in st.session_state:
+            st.session_state["sponsorship"] = check_sponsorship(_jd["description"])
+        sp = st.session_state["sponsorship"]
+        if sp["status"] == "negative" and not force:
+            st.session_state["skip_reason"] = (
+                f"⛔ **Skipped:** {sp['label']} — no resume generated."
+            )
+            st.rerun()
 
-        fit = score_fit(master_resume_text, jd["description"], jd["title"], jd["company"], api_key, base_url)
-        st.session_state["fit"] = fit
-        progress.progress(65)
-        if fit.get("fit_score", 0) < 50 or "weak fit" in fit.get("recommendation", "").lower():
+        if "fit" not in st.session_state:
+            with st.spinner("Scoring your fit with Claude..."):
+                st.session_state["fit"] = score_fit(
+                    master_resume_text, _jd["description"], _jd["title"],
+                    _jd["company"], api_key, base_url,
+                )
+        fit = st.session_state["fit"]
+        low_fit = (
+            fit.get("fit_score", 0) < 50
+            or "weak fit" in fit.get("recommendation", "").lower()
+        )
+        if low_fit and not force:
             st.session_state["skip_reason"] = (
                 f"⚠️ **Low fit ({fit.get('fit_score',0)}/100):** "
-                f"{fit.get('recommendation','Weak fit')} — not worth applying."
+                f"{fit.get('recommendation','Weak fit')} — probably not worth applying."
             )
-            progress.empty(); st.rerun()
+            st.rerun()
 
-        tailored = tailor_resume(master_resume_text, jd["description"], jd["title"], jd["company"], api_key, base_url)
+        with st.spinner("Tailoring your resume with Claude (draft + polish pass)..."):
+            tailored = tailor_resume(
+                master_resume_text, _jd["description"], _jd["title"],
+                _jd["company"], api_key, base_url,
+            )
+        tailored, removed = audit_skills(tailored, master_resume_text)
         st.session_state["tailored"] = tailored
-        progress.progress(88)
-        pdf_path, pdf_bytes = generate_pdf(tailored, jd["company"])
-        st.session_state["pdf_path"] = pdf_path
-        st.session_state["pdf_bytes"] = pdf_bytes
-        progress.progress(100)
+        st.session_state["removed_skills"] = removed
+
+        try:
+            pdf_path, pdf_bytes = generate_pdf(tailored, _jd["company"])
+            st.session_state["pdf_path"] = pdf_path
+            st.session_state["pdf_bytes"] = pdf_bytes
+        except RuntimeError as exc:
+            st.session_state["pdf_error"] = str(exc)
+
+        append_history(_jd, fit)
+        st.session_state.pop("force_generate", None)
     except RuntimeError as exc:
         st.session_state["pipeline_error"] = str(exc)
-    finally:
-        progress.empty()
     st.rerun()
 
 
@@ -644,6 +653,11 @@ if st.session_state.get("skip_reason"):
     _, c, _ = st.columns([1, 3, 1])
     with c:
         st.warning(st.session_state["skip_reason"])
+        if st.button("Generate anyway →", key="force_btn",
+                     help="Skip the gate and tailor the resume regardless"):
+            st.session_state.pop("skip_reason", None)
+            st.session_state["force_generate"] = True
+            st.rerun()
 
 if st.session_state.get("scrape_error"):
     _, c, _ = st.columns([1, 3, 1])
@@ -684,10 +698,21 @@ if "job_data" in st.session_state and "fit" in st.session_state:
     # ── Score cards ───────────────────────────────────────────────────────────
     strong = fit.get("strong_matches", [])
     gaps   = fit.get("gaps", [])
-    total  = len(strong) + len(gaps)
-    keyword_pct = round(len(strong) / total * 100) if total else 0
     exp_label = "Strong" if score >= 70 else "Moderate" if score >= 50 else "Developing"
     score_color = "#12B76A" if score >= 70 else "#F79009" if score >= 50 else "#F04438"
+
+    # Real ATS coverage: JD keywords checked against the actual tailored resume
+    ats_keywords = fit.get("ats_keywords", [])
+    coverage = None
+    if tailored and ats_keywords:
+        coverage = keyword_coverage(ats_keywords, resume_to_text(tailored))
+    if coverage:
+        keyword_pct = coverage["pct"]
+        keyword_delta = f"{len(coverage['matched'])}/{len(ats_keywords)} in resume"
+    else:
+        total = len(strong) + len(gaps)
+        keyword_pct = round(len(strong) / total * 100) if total else 0
+        keyword_delta = f"{len(strong)} matched"
 
     st.markdown("""
     <p style="font-size:0.7rem;font-weight:700;letter-spacing:0.09em;
@@ -699,7 +724,7 @@ if "job_data" in st.session_state and "fit" in st.session_state:
     mc1.metric("ATS Fit Score", f"{score}%",
                delta="Strong match" if score >= 70 else "Needs tailoring" if score >= 50 else "Weak fit")
     mc2.metric("Keyword Coverage", f"{keyword_pct}%",
-               delta=f"{len(strong)} matched")
+               delta=keyword_delta)
     mc3.metric("Skill Gaps", str(len(gaps)),
                delta="Low gaps" if len(gaps) <= 2 else "Review gaps",
                delta_color="normal" if len(gaps) <= 2 else "inverse")
@@ -786,10 +811,40 @@ if "job_data" in st.session_state and "fit" in st.session_state:
         if st.session_state.get("pdf_error"):
             st.warning(f"PDF generation failed: {st.session_state['pdf_error']}")
 
+        if st.session_state.get("removed_skills"):
+            st.info(
+                "🛡️ Truth check: removed skills Claude added that aren't in your "
+                "master resume: " + ", ".join(st.session_state["removed_skills"])
+            )
+
         if tailored:
             st.markdown("<div style='height:0.75rem'></div>", unsafe_allow_html=True)
             with st.expander("Preview resume text"):
                 st.text(resume_to_text(tailored))
+
+            with st.expander("✏️ Edit summary & bullets, then rebuild the PDF"):
+                st.text_area("Summary", value=tailored.get("summary", ""),
+                             key="edit_summary", height=80)
+                for i, job in enumerate(tailored.get("experience", [])):
+                    st.text_area(
+                        f"{job.get('title','')} — {job.get('company','')} (one bullet per line)",
+                        value="\n".join(job.get("bullets", [])),
+                        key=f"edit_bullets_{i}", height=140,
+                    )
+                if st.button("Apply edits & rebuild PDF", type="primary", key="rebuild_pdf"):
+                    tailored["summary"] = st.session_state.get("edit_summary", tailored.get("summary", ""))
+                    for i, job in enumerate(tailored.get("experience", [])):
+                        raw = st.session_state.get(f"edit_bullets_{i}", "")
+                        job["bullets"] = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+                    st.session_state["tailored"] = tailored
+                    try:
+                        pdf_path, pdf_bytes = generate_pdf(tailored, jd.get("company", ""))
+                        st.session_state["pdf_path"] = pdf_path
+                        st.session_state["pdf_bytes"] = pdf_bytes
+                        st.session_state.pop("pdf_error", None)
+                    except RuntimeError as exc:
+                        st.session_state["pdf_error"] = str(exc)
+                    st.rerun()
 
     # ── Cover letter tab ──────────────────────────────────────────────────────
     with tab_cl:
@@ -811,6 +866,11 @@ if "job_data" in st.session_state and "fit" in st.session_state:
             <p style="font-size:0.9rem;color:#667085;margin-bottom:1rem">
                 Generate a tailored cover letter in the same style as your resume.
             </p>""", unsafe_allow_html=True)
+            st.text_input(
+                "Why this company? (optional — makes the opening hook specific and real)",
+                placeholder="e.g. I've used their product daily for 2 years / their pediatric mission",
+                key="cl_company_note",
+            )
             gen_cl1, _ = st.columns([1, 3])
             with gen_cl1:
                 gen_cl_btn = st.button("✉  Generate Cover Letter", type="primary", use_container_width=True)
@@ -824,6 +884,7 @@ if "job_data" in st.session_state and "fit" in st.session_state:
                             company=jd["company"],
                             api_key=api_key,
                             base_url=base_url,
+                            company_note=st.session_state.get("cl_company_note", ""),
                         )
                         contact_line = tailored.get("contact", "") if tailored else ""
                         cl_path, cl_bytes = generate_cover_letter_pdf(
@@ -903,8 +964,43 @@ if "job_data" in st.session_state and "fit" in st.session_state:
                 st.markdown(f"<p style='font-size:0.875rem;color:#374151;margin:0.2rem 0'>• {item}</p>",
                             unsafe_allow_html=True)
 
+        if coverage:
+            st.markdown("<div style='height:0.75rem'></div>", unsafe_allow_html=True)
+            st.markdown("""
+            <p style="font-size:0.72rem;font-weight:700;letter-spacing:0.07em;
+                 text-transform:uppercase;color:#667085;margin-bottom:0.5rem">
+                🎯  ATS Keywords — coverage in your tailored resume
+            </p>""", unsafe_allow_html=True)
+            cov_l, cov_r = st.columns(2)
+            with cov_l:
+                st.markdown("<p style='font-size:0.72rem;font-weight:600;color:#12B76A'>In your resume</p>",
+                            unsafe_allow_html=True)
+                for kw in coverage["matched"]:
+                    st.markdown(f"<p style='font-size:0.875rem;color:#374151;margin:0.15rem 0'>• {kw}</p>",
+                                unsafe_allow_html=True)
+            with cov_r:
+                st.markdown("<p style='font-size:0.72rem;font-weight:600;color:#F04438'>Missing — consider working in</p>",
+                            unsafe_allow_html=True)
+                for kw in coverage["missing"]:
+                    st.markdown(f"<p style='font-size:0.875rem;color:#374151;margin:0.15rem 0'>• {kw}</p>",
+                                unsafe_allow_html=True)
+
         if sponsorship.get("matches"):
             st.markdown("<div style='height:0.75rem'></div>", unsafe_allow_html=True)
             with st.expander("Sponsorship — exact text found in posting"):
                 for match in sponsorship["matches"]:
                     st.markdown(f'> *"...{match}..."*')
+
+# ── Application history ────────────────────────────────────────────────────────
+if HISTORY_FILE.exists():
+    st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
+    with st.expander("📁 Application history"):
+        try:
+            import pandas as pd
+            st.dataframe(
+                pd.read_csv(HISTORY_FILE).sort_values("date", ascending=False),
+                use_container_width=True,
+                hide_index=True,
+            )
+        except Exception as exc:
+            st.caption(f"Could not read history: {exc}")

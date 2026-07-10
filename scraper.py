@@ -3,6 +3,7 @@ Job posting scraper. Tries requests+BS4 first, falls back to Playwright for JS-h
 """
 import re
 import subprocess
+import sys
 import time
 import requests
 from bs4 import BeautifulSoup
@@ -128,14 +129,23 @@ def _scrape_with_requests(url: str) -> Optional[dict]:
     return structured
 
 
-def _ensure_playwright_chromium():
-    """Install Playwright's Chromium binary if not already present."""
+def _install_playwright_chromium():
+    """Install Playwright's Chromium binary."""
     subprocess.run(
-        ["playwright", "install", "chromium"],
+        [sys.executable, "-m", "playwright", "install", "chromium"],
         check=True,
         capture_output=True,
-        timeout=120,
+        timeout=180,
     )
+
+
+def _launch_chromium(pw):
+    """Launch Chromium, installing the browser binary only if it's missing."""
+    try:
+        return pw.chromium.launch(headless=True)
+    except Exception:
+        _install_playwright_chromium()
+        return pw.chromium.launch(headless=True)
 
 
 def _scrape_with_playwright(url: str) -> dict:
@@ -146,11 +156,9 @@ def _scrape_with_playwright(url: str) -> dict:
             "Playwright is not installed. Run: pip install playwright && playwright install chromium"
         ) from exc
 
-    _ensure_playwright_chromium()
-
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True)
+            browser = _launch_chromium(pw)
             page = browser.new_page(extra_http_headers=HEADERS)
             try:
                 page.goto(url, timeout=30_000, wait_until="domcontentloaded")
